@@ -1,0 +1,11 @@
+.pio
+.pioenvs
+.piolibdeps
+.clang_complete
+.gcc-flags.json
+secrets.h
+.vscode
+/include
+/lib
+/test
+.travis.yml
