@@ -5,9 +5,26 @@
 // ------------------------------------ DEFINE ---------------------------------
 
 #define COMPDATE __DATE__ " " __TIME__
-#define DEBUG 1
+// #define DEBUG
 #define DEBUG_ESP_HTTP_UPDATE 1
 #define DEBUG_ESP_PORT 1
+
+// ------------------------------------ DEBUG ----------------------------------
+
+#ifdef DEBUG
+const long SERIAL_BAUD                = 115200;
+ #define DEBUG_BEGIN()          Serial.begin(SERIAL_BAUD)
+ #define DEBUG_PRINT(x)         Serial.print (x)
+ #define DEBUG_PRINTLN(x)       Serial.println (x)
+ #define DEBUG_PRINTF(...)    { Serial.print (__LINE__); Serial.print(" "); Serial.printf(__VA_ARGS__); }
+ #define DEBUG_FLUSH()          Serial.flush()
+#else
+ #define DEBUG_BEGIN()
+ #define DEBUG_PRINT(x)
+ #define DEBUG_PRINTLN(x)
+ #define DEBUG_PRINTF(...)
+ #define DEBUG_FLUSH()
+#endif
 
 // ------------------------------------ LIBRARIES ------------------------------
 
@@ -33,8 +50,6 @@
 
 // ------------------------------------ CONSTANTS ------------------------------
 
-const long SERIAL_BAUD                = 115200;
-
 // WiFi
 #ifndef SECRETS_H
  #define SECRETS_H
@@ -51,28 +66,12 @@ const unsigned long FORCE_SLEEP_MILLIS = 10e6; // force sleep after 10 seconds
 
 // MQTT
 const char* MQTT_TOPIC_TELE           = "sensor/%d/tele";
-const char* MQTT_MSG_TELE             = "{\"deviceid\":%d,\"VCC\":\"%s\",\"counter\":%d}";
+const char* MQTT_MSG_TELE             = "{\"deviceid\":%d,\"VCC\":\"%s\",\"counter\":%d,\"compiled\":\"%s\"}";
 
 const char* MQTT_TOPIC_SENSOR         = "sensor/%d/bme280/%d";
 const char* MQTT_MSG_SENSOR           = "{\"deviceid\":%d,\"sensorid\":%d,\"o\":%d,\"h\":%d,\"p\":%d,\"t\":%d}";
 
-// ------------------------------------ DEBUG ----------------------------------
-
-#ifdef DEBUG
- #define DEBUG_BEGIN()          Serial.begin(SERIAL_BAUD)
- #define DEBUG_PRINT(x)         Serial.print (x)
- #define DEBUG_PRINTLN(x)       Serial.println (x)
- #define DEBUG_PRINTF(...)    { Serial.print (__LINE__); Serial.print(" "); Serial.printf(__VA_ARGS__); }
- #define DEBUG_FLUSH()          Serial.flush()
-#else
- #define DEBUG_BEGIN()
- #define DEBUG_PRINT(x)
- #define DEBUG_PRINTLN(x)
- #define DEBUG_PRINTF(x)
- #define DEBUG_FLUSH()
-#endif
-
-// ------------------------------------ OBJECTS --------------------------------
+// ------------------------------------ GLOBALS --------------------------------
 
 // Device
 uint32_t deviceID;
@@ -117,8 +116,8 @@ sensorData sensordata;
 
 // ------------------------------------ FUNCTIONS ------------------------------
 
-void GoToSleep();
-void SaveAllToMQTT();
+void GoToSleep();       // pre declare
+void SaveAllToMQTT();   // pre declare
 
 // define int __get_adc_mode(void) { return (int) (mode /* ADC_VCC = 255 */); }
 ADC_MODE(ADC_VCC);
@@ -149,12 +148,13 @@ void setSensorId()
 {
   uint8_t test[32];
   sensorID = CRC32::calculate(bme.compensationParameters(test), 32);
-  // for (int i=0; i < 32; i++) DEBUG_PRINTF("%.2X ", test[i]);
-  // DEBUG_PRINTLN(); DEBUG_PRINTF("%.8X\n", CRC32::calculate(bme.compensationParameters(test), 32));
+#ifdef DEBUG
+  for (int i=0; i < 32; i++) DEBUG_PRINTF("%.2X ", test[i]);
+  DEBUG_PRINTLN(); DEBUG_PRINTF("%.8X\n", CRC32::calculate(bme.compensationParameters(test), 32));
+#endif
 }
 
-void ReadBME(sensorData *data)
-{
+void BMEbegin() {
   // BME280
   DEBUG_PRINTF("%lu: Starting BME280\n", millis());
   Wire.begin();
@@ -168,7 +168,10 @@ void ReadBME(sensorData *data)
     DEBUG_PRINTLN(F("You have 60 seconds to connect a full BME280 ..."));
     GoToSleep();
   }
+}
 
+void ReadBME(sensorData *data)
+{
   // read BME280
   float temp(NAN), hum(NAN), pres(NAN);
   BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
@@ -212,7 +215,6 @@ void MqttConnect() {
   mqttClient.connect();
 }
 
-
 void callback(char* topic, byte* payload, unsigned int length) {
   // handle message arrived
 }
@@ -254,7 +256,7 @@ void mqtt_tele() {
 
   dtostrfd((double)ESP.getVcc()/1000, 3, sVCC);
   sprintf(topic, MQTT_TOPIC_TELE, deviceID);
-  sprintf(buffer, MQTT_MSG_TELE, deviceID, sVCC, localmemory.counter());
+  sprintf(buffer, MQTT_MSG_TELE, deviceID, sVCC, localmemory.counter(), COMPDATE);
   // uint16_t publish(const char* topic, uint8_t qos, bool retain, const char* payload = nullptr, ...)
   uint16_t packetIdPub1 = mqttClient.publish(topic, 0, true, buffer);
   //  mqtt_publish(topic, buffer);
@@ -273,6 +275,7 @@ void mqtt_sensor() {
     sprintf(topic, MQTT_TOPIC_SENSOR, deviceID, sensorID);
     sprintf(buffer, MQTT_MSG_SENSOR, deviceID, sensorID, (records-recordnr-1) * SECONDS_OFFSET, sensordata.hum100, sensordata.pres100, sensordata.temp100);
     packetIdPub1 = mqttClient.publish(topic, 0, true, buffer);
+    DEBUG_PRINTF("mqtt published #: %d", packetIdPub1);
     //mqtt_publish(topic, buffer);
 
     recordnr++;
@@ -334,23 +337,31 @@ void connectToWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
-// save mem, wifi off, sleep
-void GoToSleep() {
-  DEBUG_PRINTF("%lu: GoToSleep\n", millis());
-  localmemory.saveMem();
-
+void disconnectFromWiFi() {
   WiFi.disconnect(true);
   delay(1);
   WiFi.mode(WIFI_OFF);
   WiFi.forceSleepBegin();
   delay(5);
+}
+
+// save mem, wifi off, sleep
+void GoToSleep() {
+  DEBUG_PRINTF("%lu: GoToSleep\n", millis());
+
+  if (WiFi.isConnected()) disconnectFromWiFi();
+     
+  // Read BME280 - this is old data.
+  ReadBME(&sensordata);
+  // save in rtc memory
+  localmemory.addRecord(&sensordata, sizeof(sensordata));
+  localmemory.saveMem();
 
   DEBUG_PRINTF("%lu: deepSleep\n", millis());
   DEBUG_FLUSH();
   // WAKE_RF_DISABLED to keep the WiFi radio disabled when we wake up
   ESP.deepSleep(SLEEPTIME, RF_DISABLED);
 }
-
 
 void SaveAllToMQTT() {
   mqtt_connect();
@@ -387,12 +398,6 @@ void setup() {
     localmemory.reset(sizeof(sensordata));
   }
 
-  // Read BME280 - this is old data.
-  ReadBME(&sensordata);
-
-  // save in rtc memory
-  localmemory.addRecord(&sensordata, sizeof(sensordata));
-
   // Check for transfering memory
   if (localmemory.recordCount() > 5 || localmemory.isMemoryFull())
   {
@@ -403,6 +408,8 @@ void setup() {
   } else {
     ActionGoToSleep = true;
   }
+
+  BMEbegin();
 
   previousMillis = millis();
  }
@@ -422,7 +429,7 @@ void loop() {
 
     SaveAllToMQTT();
     localmemory.reset(sizeof(sensordata));
-    updateSketch();
+    // updateSketch();
     ActionWiFiGotIP = false;
     ActionGoToSleep = true;
   }

@@ -26,7 +26,7 @@ bool RTCMEM::loadMem()
  // Calculate crc32 and store in rtcData, copy data to RTC
 bool RTCMEM::saveMem()
 {
-  rtcData.counter = rtcData.counter + 1;
+  //rtcData.counter = rtcData.counter + 1;
   rtcData.crc32 = calculateCRC32();
   return ESP.rtcUserMemoryWrite(0, (uint32_t*) &rtcData, sizeof(rtcData));
 }
