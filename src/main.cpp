@@ -343,6 +343,7 @@ void disconnectFromWiFi() {
   WiFi.mode(WIFI_OFF);
   WiFi.forceSleepBegin();
   delay(5);
+  delay(50); // stabilize power for BME280
 }
 
 // save mem, wifi off, sleep
