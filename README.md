@@ -6,12 +6,13 @@ This library supports the strategy to temporary store sensor readings in the
 rtc memory which survives deepsleep.
 
 Limiting WiFi connections, which takes 6 seconds, will save battery,
-however the downside is readings will become available on the server with some delay.
+however the downside is readings will become available on the server with some delay (the 6 minutes).
 
 The rtcmem can work with variable structs, which will depend on which sensor is used.
 
-This project uses a modified BME280 to identify the used sensor. The modified library exposes the calibration data. 
-The calibration data is used to calculate a crc32 checksum which is used as identifier.
+This project uses a modified BME280 library to make it possible to identify the used sensor. The modified library exposes the calibration data. The calibration data is used to calculate a crc32 checksum which is used as identifier.
+
+Data is sent by mqtt messages to a Mqtt broker.
 
 ## Discussion
 
