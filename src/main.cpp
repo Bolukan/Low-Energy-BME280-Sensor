@@ -32,11 +32,7 @@ const long SERIAL_BAUD                = 115200;
 #include <Wire.h>
 #include <SPI.h>    // BME280 library demand
 // WiFi
-#if defined(ESP8266)
-  #include <ESP8266WiFi.h>
-#elif defined(ESP32)
-  #include <WiFi.h>
-#endif
+#include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
