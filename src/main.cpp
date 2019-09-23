@@ -5,18 +5,17 @@
 // ------------------------------------ DEFINE ---------------------------------
 
 #define COMPDATE __DATE__ " " __TIME__
-// #define DEBUG
-#define DEBUG_ESP_HTTP_UPDATE 1
-#define DEBUG_ESP_PORT 1
 
+// #define DEBUG_TO_SERIAL 1
+// #define DEBUG_ASYNCMQTTCLIENT 1
 // ------------------------------------ DEBUG ----------------------------------
 
-#ifdef DEBUG
+#ifdef DEBUG_TO_SERIAL
 const long SERIAL_BAUD                = 115200;
  #define DEBUG_BEGIN()          Serial.begin(SERIAL_BAUD)
  #define DEBUG_PRINT(x)         Serial.print (x)
  #define DEBUG_PRINTLN(x)       Serial.println (x)
- #define DEBUG_PRINTF(...)    { Serial.print (__LINE__); Serial.print(" "); Serial.printf(__VA_ARGS__); }
+ #define DEBUG_PRINTF(...)    { Serial.printf("%lu",millis()); Serial.print("mS L"); Serial.print (__LINE__); Serial.print(" "); Serial.printf(__VA_ARGS__); }
  #define DEBUG_FLUSH()          Serial.flush()
 #else
  #define DEBUG_BEGIN()
@@ -28,21 +27,24 @@ const long SERIAL_BAUD                = 115200;
 
 // ------------------------------------ LIBRARIES ------------------------------
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <SPI.h>    // BME280 library demand
+#include <Arduino.h>                 // Arduino library - https://github.com/esp8266/Arduino/tree/master/cores/esp8266
+#include <Wire.h>                    // Arduino library - https://github.com/esp8266/Arduino/tree/master/libraries/Wire
+// BME280 library demands SPI, but it's not used
+#include <SPI.h>                     // Arduino library - https://github.com/esp8266/Arduino/tree/master/libraries/SPI
+
 // WiFi
-#include <ESP8266WiFi.h>
-#include <WiFiClient.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-#include <AsyncMqttClient.h>
-#include <PubSubClient.h>
+#include <ESP8266WiFi.h>             // Arduino library - https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/ESP8266WiFi.h
+#include <WiFiClient.h>              // Arduino library - https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266WiFi/src/WiFiClient.h
+#include <ESP8266HTTPClient.h>       // Arduino library - https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266HTTPClient/src
+#include <ESP8266httpUpdate.h>       // Arduino library - https://github.com/esp8266/Arduino/tree/master/libraries/ESP8266httpUpdate/src
+
+#include <AsyncMqttClient.h>         // https://github.com/marvinroger/async-mqtt-client
+//#include <PubSubClient.h>            // https://github.com/knolleary/pubsubclient
 #include "secrets.h"                 // Credentials
 // rtcmem and sensor
 #include <rtcmem.h>
-#include <CRC32.h>
-#include <BME280I2C.h>
+#include <CRC32.h>                   // https://github.com/bakercp/CRC32
+#include <BME280I2C.h>               // https://www.github.com/finitespace/BME280
 
 // ------------------------------------ CONSTANTS ------------------------------
 
@@ -59,7 +61,15 @@ const int MQTT_PORT                   = 1883;
 const uint32_t SECONDS_OFFSET         = 60;
 const uint64_t SLEEPTIME              = 60e6;
 const unsigned long FORCE_SLEEP_MILLIS = 10e6; // force sleep after 10 seconds
-
+#if defined(DEBUG_TO_SERIAL)
+const uint16_t BATTERY_TRESHOLD       = 3200; // in mV
+const uint16_t MAX_RECORDCOUNT        = 10;
+const uint64_t LONG_SLEEPTIME         = 60e6;
+#else
+const uint16_t BATTERY_TRESHOLD       = 3200; // in mV
+const uint16_t MAX_RECORDCOUNT        = 10;
+const uint64_t LONG_SLEEPTIME         = 3600e6;
+#endif
 // MQTT
 const char* MQTT_TOPIC_TELE           = "sensor/%d/tele";
 const char* MQTT_MSG_TELE             = "{\"deviceid\":%d,\"VCC\":\"%s\",\"counter\":%d,\"compiled\":\"%s\"}";
@@ -67,14 +77,19 @@ const char* MQTT_MSG_TELE             = "{\"deviceid\":%d,\"VCC\":\"%s\",\"count
 const char* MQTT_TOPIC_SENSOR         = "sensor/%d/bme280/%d";
 const char* MQTT_MSG_SENSOR           = "{\"deviceid\":%d,\"sensorid\":%d,\"o\":%d,\"h\":%d,\"p\":%d,\"t\":%d}";
 
+const char* MQTT_TOPIC_ACTION         = "sensor/%d/action";
+const char* MQTT_MSG_ACTION           = "{\"deviceid\":%d,\"VCC\":\"%s\",\"action\":\"replace battery\"}";
+
 // ------------------------------------ GLOBALS --------------------------------
 
 // Device
-uint32_t deviceID;
-uint32_t sensorID;
+uint32_t deviceID;                   // Unique ID of MCU=ESP8266
+uint32_t sensorID;                   // Fingerprint ID of BME280
 unsigned long previousMillis          = 0;
-bool ActionWiFiGotIP                  = false;
-bool ActionGoToSleep                  = false;
+bool ActionWiFiGotIP                  = false;  // 10
+bool ActionMQTT                       = false;  // 20
+bool ActionGoToSleep                  = false;  // 99
+bool ActionBatteryLow                 = false; 
 
 // rtcmem
 RTCMEM localmemory;
@@ -82,11 +97,14 @@ RTCMEM localmemory;
 // WiFi
 WiFiClient espClient;
 
-// MQTT
+// AsyncMqttClient = NEW MQTT
 AsyncMqttClient mqttClient;
+uint16_t lastSentPackageId = 0;
+uint16_t lastAcknPackageId = 0;
 
-void callback(char* topic, byte* payload, unsigned int length); // pre-declare
-PubSubClient mqtt(MQTT_HOST, MQTT_PORT, callback, espClient);
+// PubSubClient = OLD MQTT
+//void callback(char* topic, byte* payload, unsigned int length); // pre-declare
+//PubSubClient mqtt(MQTT_HOST, MQTT_PORT, callback, espClient);
 
 // BME280
 BME280I2C::Settings settings(
@@ -152,7 +170,7 @@ void setSensorId()
 
 void BMEbegin() {
   // BME280
-  DEBUG_PRINTF("%lu: Starting BME280\n", millis());
+  DEBUG_PRINTF("Starting BME280\n");
   Wire.begin();
   if (!bme.begin()) {
     DEBUG_PRINTLN(F("Could not find BME280 sensor"));
@@ -179,23 +197,67 @@ void ReadBME(sensorData *data)
   data->temp100 = (int32_t)(temp * 100);
 }
 
-// ********************  MQTT ********************
+// ******************** AsyncMqttClient ********************
+
 void onMqttConnect(bool sessionPresent) {
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTF("Connected to MQTT. Session present: %s\n",((sessionPresent) ? "true" : "false"));
+#endif
+  ActionMQTT = true;
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTLN("Disconnected from MQTT.");
+#endif
+// ERROR
+ActionGoToSleep = true;
 }
 
 void onMqttSubscribe(uint16_t packetId, uint8_t qos) {
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTLN("Subscribe acknowledged.");
+  DEBUG_PRINT("  packetId: ");
+  DEBUG_PRINTLN(packetId);
+  DEBUG_PRINT("  qos: ");
+  DEBUG_PRINTLN(qos);
+#endif
 }
 
 void onMqttUnsubscribe(uint16_t packetId) {
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTLN("Unsubscribe acknowledged.");
+  DEBUG_PRINT("  packetId: ");
+  DEBUG_PRINTLN(packetId);
+#endif
 }
 
+
 void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTLN("Publish received.");
+  DEBUG_PRINT("  topic: ");
+  DEBUG_PRINTLN(topic);
+  DEBUG_PRINT("  qos: ");
+  DEBUG_PRINTLN(properties.qos);
+  DEBUG_PRINT("  dup: ");
+  DEBUG_PRINTLN(properties.dup);
+  DEBUG_PRINT("  retain: ");
+  DEBUG_PRINTLN(properties.retain);
+  DEBUG_PRINT("  len: ");
+  DEBUG_PRINTLN(len);
+  DEBUG_PRINT("  index: ");
+  DEBUG_PRINTLN(index);
+  DEBUG_PRINT("  total: ");
+  DEBUG_PRINTLN(total);
+#endif
 }
 
 void onMqttPublish(uint16_t packetId) {
+  lastAcknPackageId = packetId;
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTF("Publish packetid %d acknowledged.\n", packetId);
+#endif
 }
 
 void MqttConnect() {
@@ -211,39 +273,7 @@ void MqttConnect() {
   mqttClient.connect();
 }
 
-void callback(char* topic, byte* payload, unsigned int length) {
-  // handle message arrived
-}
-
-void mqtt_connect() {
-  // mqtt
-  String clientId = "ESP";
-  clientId += String(deviceID, HEX);
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  // Attempt to connect
-  if (mqtt.connect(clientId.c_str())) {
-    DEBUG_PRINTLN("MQTT Connected");
-  } else {
-    DEBUG_PRINTLN("MQTT not connected");
-    ActionGoToSleep = true;
-    return;
-  }
-}
-
-void mqtt_disconnect() {
-  mqtt.disconnect();
-  delay(50);
-}
-
-void mqtt_publish(const char* topic, const char* buffer) {
-  DEBUG_PRINTF("%lu: mqtt_publish\ntopic: %s\npayload: %s\n", millis(), topic, buffer);
-  if (!mqtt.connected()) DEBUG_PRINTF("MQTT not connected. State: %d\n", mqtt.state());
-  if (!mqtt.publish(topic, buffer)) DEBUG_PRINTLN("MQTT publish failed");
-  delay(25);
-  mqtt.loop();
-  delay(25);
-}
-
+// step 2
 void mqtt_tele() {
   // VCC log
   char buffer[200];
@@ -253,15 +283,22 @@ void mqtt_tele() {
   dtostrfd((double)ESP.getVcc()/1000, 3, sVCC);
   sprintf(topic, MQTT_TOPIC_TELE, deviceID);
   sprintf(buffer, MQTT_MSG_TELE, deviceID, sVCC, localmemory.counter(), COMPDATE);
-  // uint16_t publish(const char* topic, uint8_t qos, bool retain, const char* payload = nullptr, ...)
-  uint16_t packetIdPub1 = mqttClient.publish(topic, 0, true, buffer);
-  //  mqtt_publish(topic, buffer);
+  
+  // uint16_t AsyncMqttClient::publish(const char* topic, uint8_t qos, bool retain, const char* payload, size_t length, bool dup, uint16_t message_id) {
+  // do {
+    delay(0);
+    lastSentPackageId = mqttClient.publish(/* topic */ topic, /* qos */ 1, /* retain */ true, /* payload */ buffer);
+    delay(0);
+  // } while (lastSentPackageId == 0);
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTF("Published tele package. packId: %u\n  %s: %s\n", lastSentPackageId, topic, buffer);
+#endif
 }
 
+// step 3
 void mqtt_sensor() {
   char buffer[200];
   char topic[100];
-  uint16_t packetIdPub1;
   uint16_t records = localmemory.recordCount();
   uint16_t recordnr = 0;
   while (recordnr < records)
@@ -270,16 +307,42 @@ void mqtt_sensor() {
 
     sprintf(topic, MQTT_TOPIC_SENSOR, deviceID, sensorID);
     sprintf(buffer, MQTT_MSG_SENSOR, deviceID, sensorID, (records-recordnr-1) * SECONDS_OFFSET, sensordata.hum100, sensordata.pres100, sensordata.temp100);
-    packetIdPub1 = mqttClient.publish(topic, 0, true, buffer);
-    DEBUG_PRINTF("mqtt published #: %d", packetIdPub1);
-    //mqtt_publish(topic, buffer);
-
+  do {
+    delay(1);
+    lastSentPackageId = mqttClient.publish(/* topic */ topic, /* qos */ 0, /* retain */ true, /* payload */ buffer);
+    delay(1);
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTF("Published sensor package %u.  packId: %u\n  %s: %s\n", recordnr, lastSentPackageId, topic, buffer);
+#endif
+  } while (lastSentPackageId == 0);
     recordnr++;
   }
 }
 
+// step 3
+void mqtt_action() {
+  if (ActionBatteryLow) {
+    char buffer[200];
+    char topic[100];
+    char sVCC[10];
+    dtostrfd((double)ESP.getVcc()/1000, 3, sVCC);
+    sprintf(topic, MQTT_TOPIC_ACTION, deviceID);
+    sprintf(buffer, MQTT_MSG_ACTION, deviceID, sVCC);
+
+    do {
+      delay(1);
+      lastSentPackageId = mqttClient.publish(/* topic */ topic, /* qos */ 1, /* retain */ true, /* payload */ buffer);
+      delay(1);
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTF("Published action package.  packId: %u\n  %s: %s\n", lastSentPackageId, topic, buffer);
+#endif
+    } while (lastSentPackageId == 0);
+  
+  }
+}
+
 void updateSketch() {
-  DEBUG_PRINTF("%lu: update sketch. Counter: %d\n", millis(), localmemory.counter());
+  DEBUG_PRINTF("update sketch. Counter: %d\n", localmemory.counter());
   if ((localmemory.counter() & 63) == 63) {
     ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
     t_httpUpdate_return ret = ESPhttpUpdate.update(espClient, HTTP_UPDATE_SERVER, COMPDATE);
@@ -303,13 +366,13 @@ void updateSketch() {
 // More events: https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/ESP8266WiFiGeneric.h
 
 void onSTAConnected(const WiFiEventStationModeConnected& e /*String ssid, uint8 bssid[6], uint8 channel*/) {
-  DEBUG_PRINTF("%lu: WiFi Connected: SSID %s @ BSSID %.2X:%.2X:%.2X:%.2X:%.2X:%.2X Channel %d\n",
-    millis(), e.ssid.c_str(), e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5], e.channel);
+  DEBUG_PRINTF("WiFi Connected: SSID %s @ BSSID %.2X:%.2X:%.2X:%.2X:%.2X:%.2X Channel %d\n",
+    e.ssid.c_str(), e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5], e.channel);
  }
 
 void onSTADisconnected(const WiFiEventStationModeDisconnected& e /*String ssid, uint8 bssid[6], WiFiDisconnectReason reason*/) {
-  DEBUG_PRINTF("%lu: WiFi Disconnected: SSID %s BSSID %.2X:%.2X:%.2X:%.2X:%.2X:%.2X Reason %d\n",
-    millis(), e.ssid.c_str(), e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5], e.reason);
+  DEBUG_PRINTF("WiFi Disconnected: SSID %s BSSID %.2X:%.2X:%.2X:%.2X:%.2X:%.2X Reason %d\n",
+    e.ssid.c_str(), e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5], e.reason);
   // Reason: https://github.com/esp8266/Arduino/blob/master/libraries/ESP8266WiFi/src/ESP8266WiFiType.h
 
   ActionWiFiGotIP = false;
@@ -317,15 +380,15 @@ void onSTADisconnected(const WiFiEventStationModeDisconnected& e /*String ssid, 
 }
 
 void onSTAGotIP(const WiFiEventStationModeGotIP& e /*IPAddress ip, IPAddress mask, IPAddress gw*/) {
-  DEBUG_PRINTF("%lu: WiFi GotIP: localIP %s SubnetMask %s GatewayIP %s\n",
-    millis(), e.ip.toString().c_str(), e.mask.toString().c_str(), e.gw.toString().c_str());
+  DEBUG_PRINTF("WiFi GotIP: localIP %s SubnetMask %s GatewayIP %s\n",
+    e.ip.toString().c_str(), e.mask.toString().c_str(), e.gw.toString().c_str());
 
   ActionWiFiGotIP = true;
 }
 
 // WiFi ON and connect
 void connectToWiFi() {
-  DEBUG_PRINTF("%lu: ConnectToWiFi\n", millis());
+  DEBUG_PRINTF("ConnectToWiFi\n");
   WiFi.forceSleepWake();
   delay(1);
   WiFi.persistent(false);
@@ -344,7 +407,7 @@ void disconnectFromWiFi() {
 
 // save mem, wifi off, sleep
 void GoToSleep() {
-  DEBUG_PRINTF("%lu: GoToSleep\n", millis());
+  DEBUG_PRINTF("GoToSleep\n");
 
   if (WiFi.isConnected()) disconnectFromWiFi();
      
@@ -354,17 +417,23 @@ void GoToSleep() {
   localmemory.addRecord(&sensordata, sizeof(sensordata));
   localmemory.saveMem();
 
-  DEBUG_PRINTF("%lu: deepSleep\n", millis());
+  DEBUG_PRINTF("deepSleep\n");
   DEBUG_FLUSH();
   // WAKE_RF_DISABLED to keep the WiFi radio disabled when we wake up
-  ESP.deepSleep(SLEEPTIME, RF_DISABLED);
+  if (ActionBatteryLow) {
+    ESP.deepSleep(LONG_SLEEPTIME, RF_DISABLED);
+  } else {
+    ESP.deepSleep(SLEEPTIME, RF_DISABLED);
+  }
 }
 
 void SaveAllToMQTT() {
-  mqtt_connect();
-  mqtt_tele();
+  // DEBUG_PRINTF("SaveAllToMQTT -> mqtt_sensor\n");
   mqtt_sensor();
-  mqtt_disconnect();
+  // DEBUG_PRINTF("SaveAllToMQTT -> mqtt_tele\n");
+  mqtt_tele();
+  // DEBUG_PRINTF("SaveAllToMQTT -> mqtt_action\n");
+  mqtt_action();
 }
 
 // ------------------------------------ SETUP ----------------------------------
@@ -385,29 +454,35 @@ void setup() {
 
   // Serial
   DEBUG_BEGIN();
-  DEBUG_PRINTF("\n%lu: setup\n", millis());
+  DEBUG_PRINTLN();
+  DEBUG_PRINTF("setup, WiFi is off\n");
 
   // RTCMEM
   if (localmemory.loadMem()) {
     DEBUG_PRINTF("RTCMEM: OK  Records: %d\n", localmemory.recordCount());
   } else {
     DEBUG_PRINTLN("RTCMEM: Error (normal at first boot)");
+    DEBUG_PRINTF("Record size: %u\n", sizeof(sensordata))
     localmemory.reset(sizeof(sensordata));
   }
 
   // Check for transfering memory
-  if (localmemory.recordCount() > 5 || localmemory.isMemoryFull())
+  if (localmemory.recordCount() >= MAX_RECORDCOUNT || localmemory.isMemoryFull())
   {
     e1 = WiFi.onStationModeConnected(onSTAConnected);
     e2 = WiFi.onStationModeDisconnected(onSTADisconnected);
     e4 = WiFi.onStationModeGotIP(onSTAGotIP);
     connectToWiFi();
+    ActionGoToSleep = false;
   } else {
     ActionGoToSleep = true;
   }
 
+  // connect to BME
   BMEbegin();
 
+  if (ESP.getVcc()<BATTERY_TRESHOLD) ActionBatteryLow = true;
+   
   previousMillis = millis();
  }
 
@@ -416,19 +491,32 @@ void setup() {
 void loop() {
 
   if (ActionGoToSleep) {
-    GoToSleep();
+    GoToSleep();                     // Disconnect WiFi, read BME and deep sleep
+  }
+
+  if (ActionMQTT) {
+    SaveAllToMQTT();
+#if defined(DEBUG_TO_SERIAL)
+  DEBUG_PRINTLN("Going to reset memory");
+#endif
+    localmemory.reset(sizeof(sensordata));
+    // updateSketch();
+    ActionMQTT = false;
+    while (lastAcknPackageId != lastSentPackageId)
+    {
+      delay(1);
+    }
+    ActionGoToSleep = true;
   }
 
   if (ActionWiFiGotIP) {
     setDeviceId();
     setSensorId();
-    MqttConnect();
-
-    SaveAllToMQTT();
-    localmemory.reset(sizeof(sensordata));
-    // updateSketch();
+#if defined(DEBUG_ASYNCMQTTCLIENT)
+  DEBUG_PRINTF("Connect to Mqtt");
+#endif
+    MqttConnect();                   // AsyncMQTTClient, client = "esp8266xxxxxx",xxxxxx=ChipId
     ActionWiFiGotIP = false;
-    ActionGoToSleep = true;
   }
 
   // gotosleep if it takes to long to get WiFi

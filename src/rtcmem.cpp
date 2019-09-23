@@ -11,6 +11,7 @@ void RTCMEM::reset(uint8_t recordLength)
   memset(&rtcData.data,0,sizeof(rtcData.data));
   rtcData.recordCount = 0;
   rtcData.recordLength = recordLength;
+  rtcData.counter++;
 }
 
 // load RTC memory in rtcData structure, calculate crc32 and store in _crc32
@@ -26,7 +27,6 @@ bool RTCMEM::loadMem()
  // Calculate crc32 and store in rtcData, copy data to RTC
 bool RTCMEM::saveMem()
 {
-  //rtcData.counter = rtcData.counter + 1;
   rtcData.crc32 = calculateCRC32();
   return ESP.rtcUserMemoryWrite(0, (uint32_t*) &rtcData, sizeof(rtcData));
 }
@@ -57,7 +57,7 @@ uint16_t RTCMEM::recordCount()
 
 bool RTCMEM::isMemoryFull()
 {
-    return (((rtcData.recordCount + 1) * rtcData.recordLength) > sizeof(rtcData.data));
+    return ((unsigned long long) ((rtcData.recordCount + 1) * rtcData.recordLength) > sizeof(rtcData.data));
 }
 
 bool RTCMEM::addRecord(const void* record, int recordSize)
