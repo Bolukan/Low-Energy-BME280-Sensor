@@ -410,9 +410,10 @@ void GoToSleep() {
   DEBUG_PRINTF("GoToSleep\n");
 
   if (WiFi.isConnected()) disconnectFromWiFi();
-     
+  
   // Read BME280 - this is old data.
-  ReadBME(&sensordata);
+  delay(50); // experience we need some time to get stable reading (probably stable power?)
+  ReadBME(&sensordata); // it returns last reading, and initiate new one
   // save in rtc memory
   localmemory.addRecord(&sensordata, sizeof(sensordata));
   localmemory.saveMem();
