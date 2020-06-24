@@ -30,7 +30,7 @@ ESP8266 ESP12F on a breakout board + BME280
 | GPIO12          |               |         |
 | GPIO13          |               |         |
 | VCC             | VCC           | PLUS    |
-|
+|                 |               |         |
 | TXD             |               |         |
 | RXD             |               |         |
 | GPIO5           | SCL           |         | 
