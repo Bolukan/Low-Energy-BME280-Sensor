@@ -20,21 +20,22 @@ Please help me and contribute this development:
 
 ## Pins
 ESP8266 ESP12F on a breakout board + BME280
-
-REST               - GPIO16
-ADC
-CH_PD (10K VCC)
-GPIO16             - REST
-GPIO14
-GPIO12
-GPIO13
-VCC                - VCC BME280   - Battery + (LiFePo4)
-
-TXD
-RXD
-GPIO5              - SCL BME280
-GPIO4              - SDA BME280
-GPIO0
-GPIO2
-GPIO15 (10K GND)
-GND                - GND BME280    - Battery - (LiFePo4)
+| ESP8266         | BME280        | LiFePo4 |
+| --------------- | ------------- | ------- |
+| REST - GPIO16   |               |         |
+| ADC             |               |         |
+| CH_PD (10K VCC) |               |         |
+| GPIO16 - REST   |               |         |
+| GPIO14          |               |         |
+| GPIO12          |               |         |
+| GPIO13          |               |         |
+| VCC             | VCC           | PLUS    |
+|
+| TXD             |               |         |
+| RXD             |               |         |
+| GPIO5           | SCL           |         | 
+| GPIO4           | SDA           |         |
+| GPIO0           |               |         |
+| GPIO2           |               |         |
+| GPIO15-10K-GND  |               |         |
+| GND             | GND           | MIN     |
